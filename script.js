@@ -101,7 +101,7 @@ document.getElementById("reportForm").addEventListener("submit", async (e) => {
 
     showSpinner(true);
     try {
-        const res = await fetch("https://city-guardian.onrender.com/", { method: "POST", body: formData });
+        const res = await fetch("https://city-guardian.onrender.com/send-report", { method: "POST", body: formData });
         const data = await res.json();
 
         if (res.ok && data.status === "success") {
@@ -212,3 +212,4 @@ if (SpeechRecognition) {
     document.getElementById("voiceBtn").innerText = "🎤 Voice not supported";
 
 }
+
