@@ -172,7 +172,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Update this for production
+    allow_origins=["https://city-guardian-yybm.vercel.app/"], # Update this for production
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -266,3 +266,4 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "active"}
+
