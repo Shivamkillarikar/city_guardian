@@ -169,14 +169,14 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
 app = FastAPI()
-
+origins = [
+    "http://127.0.0.1:5500",  # For local testing
+    "https://city-guardian-yybm.vercel.app",  # Your production URL
+    "https://city-guardian-yybm.vercel.app/", # URL with trailing slash
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://127.0.0.1:5500",
-        "https://city-guardian-yybm.vercel.app/",
-        "https://city-guardian-yybm.vercel.app/",
-    ], # Update this for production
+    allow_origins=origins, # Update this for production
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -270,5 +270,6 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "active"}
+
 
 
