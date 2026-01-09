@@ -212,35 +212,50 @@ def classification_agent(complaint: str):
     )
     return json.loads(res.choices[0].message.content)
 
-def drafting_agent(name, complaint, category, urgency):
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"""
-        You are an AI assistant writing official municipal emails. 
+def drafting_agent(name, email, complaint, location, category, urgency):
+    # It is best practice to use a System Message for persona-setting
+    system_msg = "You are an official Municipal Correspondence AI. You write formal, persuasive, and structured emails."
+    
+    # We use an f-string to inject the variables into the prompt
+    user_msg = f"""
+Write a professional civic complaint email based on the following details:
 
-Rules:
-- Minimum 3 paragraphs
-- Formal tone
-- Mention public inconvenience
-- End with the following specific signature format exactly as shown.
+CITIZEN DETAILS:
+- Name: {name}
+- Email: {email}
+- Location of Issue: {location}
 
-Citizen Name: {name}
-Citizen Email: {email}
-Complaint Category: {category}
-Urgency Level: {urgency}
-Location: {location}
+COMPLAINT DETAILS:
+- Category: {category}
+- Urgency: {urgency}
+- Description: {complaint}
 
-Complaint Description:
-{complaint}
+RULES:
+1. Use a formal, respectful tone.
+2. Minimum of 3 paragraphs: 
+   - Para 1: Introduction and clear statement of the issue.
+   - Para 2: Details of public inconvenience and potential risks.
+   - Para 3: Request for specific action and timeline.
+3. Use a clear Subject Line at the top.
+4. MANDATORY SIGNATURE: End the email exactly with this format:
 
-EMAIL SIGNATURE FORMAT (End the email with this):
 Thank you,
 {name}
 {email}
 Reported Location: {location}
-""" ]
+"""
+
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": user_msg}
+        ],
+        temperature=0.7 # Slight creativity for better writing flow
     )
+    
     return res.choices[0].message.content
+
 
 # --- ROUTES ---
 @app.post("/send-report")
@@ -263,12 +278,20 @@ async def send_report(
 
     # Agent 2: Classification
     cl = classification_agent(complaint)
-    
+    google_maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
+    location_text = f"Lat: {latitude}, Lon: {longitude} (View on Map: {google_maps_link})"
     # Simple Router
     dept = next((d for d in OFFICERS if any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
     
     # Agent 3: Drafting
-    body = drafting_agent(name, complaint, cl['category'], cl['urgency'])
+    email_body = drafting_agent(
+    name=name, 
+    email=email,          # Missing in your snippet
+    complaint=complaint, 
+    location=location_text, 
+    category=cl['category'], 
+    urgency=cl['urgency']
+)
     
     # Send via Maileroo (Logic remains same as your original)
     payload = {
@@ -293,6 +316,7 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "active"}
+
 
 
 
