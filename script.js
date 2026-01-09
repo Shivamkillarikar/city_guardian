@@ -336,7 +336,7 @@ document.getElementById("reportForm").addEventListener("submit", async (e) => {
     showSpinner(true);
     try {
         // Ensure this URL matches your deployed Render backend
-        const res = await fetch("https://city-guardian-yybm.onrender.com/send-report", { 
+        const res = await fetch("https://city-guardian.onrender.com/send-report", { 
             method: "POST", 
             body: formData 
         });
@@ -452,5 +452,6 @@ if (SpeechRecognition) {
     document.getElementById("voiceBtn").disabled = true;
     document.getElementById("voiceBtn").innerText = "🎤 Not Supported";
 }
+
 
 
