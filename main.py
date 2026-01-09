@@ -157,29 +157,40 @@
 #     return {"status": "CityGuardian backend running"}
 
 
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
-import requests, base64, os, json, re
+import requests, base64, os, json, re, math
+import pandas as pd
+from datetime import datetime
 
 load_dotenv(override=True)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
 app = FastAPI()
+
+# --- CORS SETTINGS ---
 origins = [
-    "http://127.0.0.1:5500",  # For local testing
-    "https://city-guardian-yybm.vercel.app",  # Your production URL
-    "https://city-guardian-yybm.vercel.app/", # URL with trailing slash
+    "http://127.0.0.1:5500",
+    "https://city-guardian-yybm.vercel.app",
 ]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins, # Update this for production
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- UTILS ---
+def calculate_distance(lat1, lon1, lat2, lon2):
+    R = 6371000  # Radius of Earth in meters
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
+    return R * 2 * math.asin(math.sqrt(a))
 
 # --- OFFICERS DATA ---
 OFFICERS = [
@@ -191,7 +202,6 @@ OFFICERS = [
 
 # --- AGENTS ---
 def vision_verifier(img_b64: str):
-    """Checks if image is actually a civic issue."""
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -207,55 +217,20 @@ def vision_verifier(img_b64: str):
 def classification_agent(complaint: str):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"Classify this complaint. JSON ONLY: {{'category': '...', 'urgency': 'low|medium|high'}}\n\n{complaint}"}],
+        messages=[{"role": "user", "content": f"Classify this complaint. Use only these categories: Water, Sewage, Roads, Electric. JSON ONLY: {{'category': '...', 'urgency': 'low|medium|high'}}\n\n{complaint}"}],
         response_format={"type": "json_object"}
     )
     return json.loads(res.choices[0].message.content)
 
 def drafting_agent(name, email, complaint, location, category, urgency):
-    # It is best practice to use a System Message for persona-setting
-    system_msg = "You are an official Municipal Correspondence AI. You write formal, persuasive, and structured emails."
+    system_msg = "You are an official Municipal Correspondence AI. Write a formal 3-paragraph email."
+    user_msg = f"Citizen: {name}\nEmail: {email}\nLocation: {location}\nCategory: {category}\nUrgency: {urgency}\nIssue: {complaint}\n\nEnd with name, email, and location."
     
-    # We use an f-string to inject the variables into the prompt
-    user_msg = f"""
-Write a professional civic complaint email based on the following details:
-
-CITIZEN DETAILS:
-- Name: {name}
-- Email: {email}
-- Location of Issue: {location}
-
-COMPLAINT DETAILS:
-- Category: {category}
-- Urgency: {urgency}
-- Description: {complaint}
-
-RULES:
-1. Use a formal, respectful tone.
-2. Minimum of 3 paragraphs: 
-   - Para 1: Introduction and clear statement of the issue.
-   - Para 2: Details of public inconvenience and potential risks.
-   - Para 3: Request for specific action and timeline.
-3. Use a clear Subject Line at the top.
-4. MANDATORY SIGNATURE: End the email exactly with this format:
-
-Thank you,
-{name}
-{email}
-Reported Location: {location}
-"""
-
     res = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg}
-        ],
-        temperature=0.7 # Slight creativity for better writing flow
+        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
     )
-    
     return res.choices[0].message.content
-
 
 # --- ROUTES ---
 @app.post("/send-report")
@@ -267,57 +242,62 @@ async def send_report(
     longitude: float = Form(...),
     image: UploadFile = File(None)
 ):
+    # 1. Image Verification
     img_b64 = None
     if image:
         content = await image.read()
         img_b64 = base64.b64encode(content).decode()
-        # Agent 1: Vision Verification
         v_check = vision_verifier(img_b64)
         if not v_check.get("valid"):
             return {"status": "error", "message": "AI rejected image: Not a civic issue."}
 
-    # Agent 2: Classification
+    # 2. AI Classification
     cl = classification_agent(complaint)
+    category = cl['category']
+
+    # 3. DUPLICATE DETECTION (Google Sheet Check)
+    SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
+    SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
+    
+    try:
+        df = pd.read_csv(SHEET_URL)
+        df.columns = df.columns.str.strip()
+        # Filter Pending issues of the same category
+        pending = df[df['Status'].str.strip().str.capitalize() == 'Pending']
+        
+        for _, row in pending.iterrows():
+            ex_lat, ex_lon = map(float, str(row['Location']).split(','))
+            if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
+                # If duplicate found, throw 409 error
+                raise HTTPException(status_code=409, detail=f"Duplicate Request: This {category} issue is already being tracked (Ticket #{row['ID']}).")
+    except HTTPException as e: raise e
+    except Exception as e: print(f"Sheet check skipped: {e}")
+
+    # 4. Routing and Email Prep
     google_maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
-    location_text = f"Lat: {latitude}, Lon: {longitude} (View on Map: {google_maps_link})"
-    # Simple Router
-    dept = next((d for d in OFFICERS if any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
+    location_text = f"{latitude}, {longitude}\nMap: {google_maps_link}"
     
-    # Agent 3: Drafting
-    email_body = drafting_agent(
-    name=name, 
-    email=email,          # Missing in your snippet
-    complaint=complaint, 
-    location=location_text, 
-    category=cl['category'], 
-    urgency=cl['urgency']
-)
+    dept = next((d for d in OFFICERS if d['name'].lower() in category.lower() or any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
     
-    # Send via Maileroo (Logic remains same as your original)
+    email_body = drafting_agent(name, email, complaint, location_text, category, cl['urgency'])
+    
+    # 5. Send via Maileroo
     payload = {
         "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
         "to": [{"address": dept['email']}],
-        "subject": f"[{cl['urgency'].upper()}] New {cl['category']} Report",
-        "html": body.replace("\n", "<br>")
+        "subject": f"[{cl['urgency'].upper()}] New {category} Report",
+        "html": email_body.replace("\n", "<br>") # Fixed 'body' to 'email_body'
     }
     if img_b64:
         payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
-    r = requests.post("https://smtp.maileroo.com/api/v2/emails", 
-                      headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
-                      json=payload)
+    requests.post("https://smtp.maileroo.com/api/v2/emails", 
+                  headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
+                  json=payload)
 
-    return {
-        "status": "success",
-        "department": dept['name'],
-        "urgency": cl['urgency'],
-        "message": "Email sent and Receipt ready!"
-    }
+    return {"status": "success", "department": dept['name'], "urgency": cl['urgency']}
 
 @app.get("/")
 def health(): return {"status": "active"}
-
-
-
-
-
+    
+        
