@@ -165,13 +165,15 @@ import requests, base64, os, json, re, math
 import pandas as pd
 from datetime import datetime
 
+# 1. INITIALIZATION & CONFIG
 load_dotenv(override=True)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
-app = FastAPI()
+app = FastAPI(title="CityGuardian Backend")
 
 # --- CORS SETTINGS ---
+# Ensure these match your Vercel deployment exactly
 origins = [
     "http://127.0.0.1:5500",
     "https://city-guardian-yybm.vercel.app",
@@ -187,53 +189,71 @@ app.add_middleware(
 
 # --- UTILS ---
 def calculate_distance(lat1, lon1, lat2, lon2):
-    R = 6371000  # Radius of Earth in meters
+    """Haversine formula to calculate distance in meters."""
+    R = 6371000 
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
     a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
-# --- OFFICERS DATA ---
+# --- OFFICERS / DEPARTMENT DATA ---
 OFFICERS = [
-    {"name": "Water Dept", "email": "shivamkillarikar007@gmail.com", "keywords": ["water", "leak", "pipe"]},
-    {"name": "Sewage Dept", "email": "shivamkillarikar22@gmail.com", "keywords": ["sewage", "drain", "smell"]},
-    {"name": "Roads Dept", "email": "aishanidolan@gmail.com", "keywords": ["road", "pothole", "traffic"]},
-    {"name": "Electric Dept", "email": "adityakillarikar@gmail.com", "keywords": ["light", "wire", "pole"]},
+    {"name": "Water Dept", "email": "shivamkillarikar007@gmail.com", "keywords": ["water", "leak", "pipe", "burst"]},
+    {"name": "Sewage Dept", "email": "shivamkillarikar22@gmail.com", "keywords": ["sewage", "drain", "gutter", "overflow"]},
+    {"name": "Roads Dept", "email": "aishanidolan@gmail.com", "keywords": ["road", "pothole", "traffic", "pavement"]},
+    {"name": "Electric Dept", "email": "adityakillarikar@gmail.com", "keywords": ["light", "wire", "pole", "shock", "power"]},
 ]
 
-# --- AGENTS ---
+# --- AI AGENTS ---
 def vision_verifier(img_b64: str):
+    """Agent 1: Checks if the image is actually a civic issue."""
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Is this a civic issue (garbage, pothole, leak, etc)? Respond ONLY in JSON: {'valid': true/false}"},
+                {"type": "text", "text": "Is this a civic issue (garbage, pothole, leak, fallen tree, etc)? Respond ONLY in JSON: {'valid': true/false}"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]}],
             response_format={"type": "json_object"}
         )
         return json.loads(res.choices[0].message.content)
-    except: return {"valid": True}
+    except: return {"valid": True} # Fallback to true to avoid blocking valid reports
 
 def classification_agent(complaint: str):
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"Classify this complaint. Use only these categories: Water, Sewage, Roads, Electric. JSON ONLY: {{'category': '...', 'urgency': 'low|medium|high'}}\n\n{complaint}"}],
-        response_format={"type": "json_object"}
-    )
-    return json.loads(res.choices[0].message.content)
+    """Agent 2: Categorizes the text and assesses urgency."""
+    try:
+        res = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": f"Classify this civic complaint. Use only these categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{'category': '...', 'urgency': 'low|medium|high'}}\n\nComplaint: {complaint}"}],
+            response_format={"type": "json_object"}
+        )
+        return json.loads(res.choices[0].message.content)
+    except: return {"category": "General", "urgency": "medium"}
 
 def drafting_agent(name, email, complaint, location, category, urgency):
-    system_msg = "You are an official Municipal Correspondence AI. Write a formal 3-paragraph email."
-    user_msg = f"Citizen: {name}\nEmail: {email}\nLocation: {location}\nCategory: {category}\nUrgency: {urgency}\nIssue: {complaint}\n\nEnd with name, email, and location."
-    
+    """Agent 3: Drafts a professional municipal email."""
+    system_msg = "You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email."
+    user_msg = f"""
+    Write a formal email based on:
+    Citizen: {name} ({email})
+    Location: {location}
+    Category: {category}
+    Urgency: {urgency}
+    Issue: {complaint}
+
+    End exactly with:
+    Thank you,
+    {name}
+    {email}
+    Reported Location: {location}
+    """
     res = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
     )
     return res.choices[0].message.content
 
-# --- ROUTES ---
+# --- MAIN ROUTE ---
 @app.post("/send-report")
 async def send_report(
     name: str = Form(...),
@@ -241,65 +261,97 @@ async def send_report(
     complaint: str = Form(...),
     latitude: float = Form(...),
     longitude: float = Form(...),
+    address: str = Form(None),
     image: UploadFile = File(None)
 ):
-    # 1. Image Verification
+    # 1. IMAGE HANDLING & VISION CHECK
     img_b64 = None
     if image:
         content = await image.read()
         img_b64 = base64.b64encode(content).decode()
         v_check = vision_verifier(img_b64)
         if not v_check.get("valid"):
-            return {"status": "error", "message": "AI rejected image: Not a civic issue."}
+            # Return a 400 error if AI determines image is not a civic issue
+            return {"status": "error", "message": "AI rejected image: This does not appear to be a civic issue."}
 
-    # 2. AI Classification
+    # 2. AI CLASSIFICATION
     cl = classification_agent(complaint)
-    category = cl['category']
+    category = cl.get('category', 'Roads') # Default to Roads if unknown
 
-    # 3. DUPLICATE DETECTION (Google Sheet Check)
+    # 3. GEOSPATIAL DUPLICATE DETECTION
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
     SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
     
     try:
+        # Fetching the sheet via pandas
         df = pd.read_csv(SHEET_URL)
         df.columns = df.columns.str.strip()
-        # Filter Pending issues of the same category
-        pending = df[df['Status'].str.strip().str.capitalize() == 'Pending']
         
-        for _, row in pending.iterrows():
-            ex_lat, ex_lon = map(float, str(row['Location']).split(','))
-            if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
-                # If duplicate found, throw 409 error
-                raise HTTPException(status_code=409, detail=f"Duplicate Request: This {category} issue is already being tracked (Ticket #{row['ID']}).")
-    except HTTPException as e: raise e
-    except Exception as e: print(f"Sheet check skipped: {e}")
+        # Check only 'Pending' issues to find active duplicates
+        if 'Status' in df.columns and 'Location' in df.columns:
+            pending = df[df['Status'].astype(str).str.strip().str.capitalize() == 'Pending']
+            
+            for _, row in pending.iterrows():
+                try:
+                    loc_str = str(row['Location'])
+                    if ',' in loc_str:
+                        ex_lat, ex_lon = map(float, loc_str.split(','))
+                        # Use 50-meter threshold for duplication
+                        if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
+                            # RAISE 409: This allows frontend to show the 'Duplicate' message
+                            raise HTTPException(
+                                status_code=409, 
+                                detail=f"Duplicate Request: Ticket #{row.get('ID', 'N/A')} already covers this {category} issue at your location."
+                            )
+                except (ValueError, TypeError):
+                    continue # Skip malformed location rows in Google Sheet
+    except HTTPException as e: 
+        raise e # Re-raise duplicate error for the frontend
+    except Exception as e: 
+        print(f"Duplicate check log: {e}") # Log error but don't crash the server
 
-    # 4. Routing and Email Prep
+    # 4. PREPARE LOCATION & ROUTING
+    # Prefer fetched address, fallback to coordinates
+    loc_display = address if address else f"{latitude}, {longitude}"
     google_maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
-    location_text = f"{latitude}, {longitude}\nMap: {google_maps_link}"
+    full_location_info = f"{loc_display}\nGoogle Maps: {google_maps_link}"
     
+    # Standardize department routing
     dept = next((d for d in OFFICERS if d['name'].lower() in category.lower() or any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
     
-    email_body = drafting_agent(name, email, complaint, location_text, category, cl['urgency'])
+    # 5. DRAFT EMAIL & SEND VIA MAILEROO
+    email_body = drafting_agent(name, email, complaint, full_location_info, category, cl.get('urgency', 'medium'))
     
-    # 5. Send via Maileroo
-    payload = {
-        "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
-        "to": [{"address": dept['email']}],
-        "subject": f"[{cl['urgency'].upper()}] New {category} Report",
-        "html": email_body.replace("\n", "<br>") # Fixed 'body' to 'email_body'
+    try:
+        payload = {
+            "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
+            "to": [{"address": dept['email']}],
+            "subject": f"[{cl.get('urgency', 'MED').upper()}] New {category} Report at {loc_display[:30]}...",
+            "html": email_body.replace("\n", "<br>")
+        }
+        if img_b64:
+            payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
+
+        requests.post(
+            "https://smtp.maileroo.com/api/v2/emails", 
+            headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=10
+        )
+    except Exception as e:
+        print(f"Email Dispatch failed: {e}")
+
+    # 6. RETURN SUCCESS
+    return {
+        "status": "success", 
+        "department": dept['name'], 
+        "urgency": cl.get('urgency', 'medium'),
+        "message": "Report submitted successfully."
     }
-    if img_b64:
-        payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
-
-    requests.post("https://smtp.maileroo.com/api/v2/emails", 
-                  headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
-                  json=payload)
-
-    return {"status": "success", "department": dept['name'], "urgency": cl['urgency']}
 
 @app.get("/")
 def health(): return {"status": "active"}
     
         
+
 
