@@ -175,6 +175,7 @@ app = FastAPI()
 origins = [
     "http://127.0.0.1:5500",
     "https://city-guardian-yybm.vercel.app",
+    "https://city-guardian-yybm.vercel.app/",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -301,3 +302,4 @@ async def send_report(
 def health(): return {"status": "active"}
     
         
+
