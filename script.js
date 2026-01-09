@@ -41,6 +41,7 @@ navigator.geolocation.getCurrentPosition(async (pos) => {
 async function reverseGeocode(lat, lng) {
     const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
     const data = await res.json();
+    formData.append("address",data.display_name)
     return data.display_name;
 }
 
@@ -212,4 +213,5 @@ if (SpeechRecognition) {
     document.getElementById("voiceBtn").innerText = "🎤 Voice not supported";
 
 }
+
 
