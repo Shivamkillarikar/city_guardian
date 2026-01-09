@@ -215,7 +215,30 @@ def classification_agent(complaint: str):
 def drafting_agent(name, complaint, category, urgency):
     res = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[{"role": "user", "content": f"Write a formal email from {name} about a {category} issue ({urgency} priority). Complaint: {complaint}"}]
+        messages=[{"role": "user", "content": f"""
+        You are an AI assistant writing official municipal emails. 
+
+Rules:
+- Minimum 3 paragraphs
+- Formal tone
+- Mention public inconvenience
+- End with the following specific signature format exactly as shown.
+
+Citizen Name: {name}
+Citizen Email: {email}
+Complaint Category: {category}
+Urgency Level: {urgency}
+Location: {location}
+
+Complaint Description:
+{complaint}
+
+EMAIL SIGNATURE FORMAT (End the email with this):
+Thank you,
+{name}
+{email}
+Reported Location: {location}
+""" ]
     )
     return res.choices[0].message.content
 
@@ -270,6 +293,7 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "active"}
+
 
 
 
