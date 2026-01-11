@@ -334,7 +334,7 @@ async def send_report(
             payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
         requests.post(
-            "[https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails)", 
+            "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", 
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
             json=payload,
             timeout=10
@@ -353,4 +353,5 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "active"}
         
+
 
