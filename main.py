@@ -156,7 +156,6 @@
 # def health():
 #     return {"status": "CityGuardian backend running"}
 
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import google.generativeai as genai
@@ -179,8 +178,8 @@ if not GEMINI_API_KEY or not MAILEROO_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 MODEL_NAME = "gemini-1.5-flash"
 
-# ================= SAFETY SETTINGS (CRITICAL FIX) =================
-# This stops Gemini from blocking emails about "sewage" or "accidents"
+# ================= SAFETY SETTINGS =================
+# Critical: Allows the AI to process words like "Sewage", "Dirty", "Accident"
 SAFETY_SETTINGS = {
     HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
     HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
@@ -193,7 +192,7 @@ app = FastAPI(title="CityGuardian Backend (Gemini Powered)")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allow all for debugging
+    allow_origins=["*"], # Allow all for seamless dev/demo
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -229,7 +228,6 @@ def vision_verifier(img_bytes: bytes):
         model = genai.GenerativeModel(MODEL_NAME)
         image_part = {"mime_type": "image/jpeg", "data": img_bytes}
 
-        # Simpler prompt without complex JSON strictness
         prompt = (
             "Analyze this image. Is it a civic issue like garbage, pothole, water leak, broken street light, traffic, or construction? "
             "Respond with exactly one word: YES or NO."
@@ -240,10 +238,7 @@ def vision_verifier(img_bytes: bytes):
             safety_settings=SAFETY_SETTINGS
         )
         
-        # Simple string check is more robust than JSON parsing
         text = response.text.strip().upper()
-        print(f"Vision Agent says: {text}")
-        
         if "YES" in text:
             return {"valid": True}
         else:
@@ -251,14 +246,14 @@ def vision_verifier(img_bytes: bytes):
 
     except Exception as e:
         print(f"Vision Error: {e}")
-        return {"valid": True} # Fallback to True to not block user
+        return {"valid": True} # Fallback to avoid blocking
 
 def classification_agent(complaint: str):
     try:
         model = genai.GenerativeModel(MODEL_NAME)
         prompt = f"""
         Classify this civic complaint into: Water, Sewage, Roads, Electric.
-        Complaint: "{complaint}" """
+        Complaint: "{complaint}"
         Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}
         """
         response = model.generate_content(prompt, safety_settings=SAFETY_SETTINGS)
@@ -266,7 +261,6 @@ def classification_agent(complaint: str):
     except Exception as e:
         print(f"Classification Error: {e}")
         return {"category": "Roads", "urgency": "medium"}
-        
 
 def drafting_agent(name, email, complaint, location, category, urgency):
     try:
@@ -283,7 +277,7 @@ def drafting_agent(name, email, complaint, location, category, urgency):
 
         Structure:
         1. Introduction stating the issue clearly.
-        2. Impact on the neighborhood and public safety.
+        2. Impact on the neighborhood.
         3. Request for immediate resolution.
 
         Sign off exactly like this:
@@ -293,16 +287,11 @@ def drafting_agent(name, email, complaint, location, category, urgency):
         """
         
         response = model.generate_content(prompt, safety_settings=SAFETY_SETTINGS)
-        
-        if not response.text:
-            raise ValueError("Empty response from AI")
-            
         return response.text
 
     except Exception as e:
-        print(f"Drafting Error (CRITICAL): {e}")
-        # Only uses this if AI completely crashes
-        return f"To the {category} Department,\n\nI am writing to report a serious issue regarding {complaint} at {location}.\n\nPlease resolve this.\n\nThank you,\n{name}\n{email}"
+        print(f"Drafting Error: {e}")
+        return f"To the {category} Department,\n\nI am reporting a {complaint} issue at {location}.\n\nThank you,\n{name}"
 
 # ================= MAIN ROUTE =================
 @app.post("/send-report")
@@ -324,8 +313,6 @@ async def send_report(
         # Verify
         check = vision_verifier(img_bytes)
         if not check.get("valid"):
-             # If you want to force block invalid images, uncomment the next line:
-             # raise HTTPException(status_code=400, detail="Image does not look like a civic issue.")
              print("Warning: Vision agent flagged this image, but processing anyway.")
 
     # 2. CLASSIFICATION
@@ -337,14 +324,15 @@ async def send_report(
     try:
         SHEET_ID = "1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI"
         SHEET_URL = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){SHEET_ID}/export?format=csv"
+        
         df = pd.read_csv(SHEET_URL)
         if {"Status", "Location"}.issubset(df.columns):
-            pending = df[df["Status"].astype(str).str.lower() == "pending"]
+            # Clean string to match regardless of spaces/case
+            pending = df[df["Status"].astype(str).str.lower().str.strip() == "pending"]
             for _, row in pending.iterrows():
                 try:
                     lat, lon = map(float, str(row["Location"]).split(","))
                     if calculate_distance(latitude, longitude, lat, lon) < 50:
-                        # Check category match
                         row_cat = str(row.get("Category", "")).lower()
                         if category.lower() in row_cat:
                              raise HTTPException(status_code=409, detail=f"Duplicate report exists.")
@@ -354,13 +342,14 @@ async def send_report(
 
     # 4. PREPARE DATA
     loc_display = address if address else f"{latitude}, {longitude}"
-    full_location = f"{loc_display} (Map: [http://maps.google.com/?q=](http://maps.google.com/?q=){latitude},{longitude})"
+    full_location = f"{loc_display} (Map: [https://www.google.com/maps?q=](https://www.google.com/maps?q=){latitude},{longitude})"
 
-    # 5. N8N
+    # 5. N8N TRIGGER
     report_id = str(uuid.uuid4())[:8]
     try:
+        n8n_url = "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)"
         requests.post(
-            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)",
+            n8n_url,
             json={
                 "ID": report_id,
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -369,22 +358,20 @@ async def send_report(
                 "issue": complaint,
                 "category": category,
                 "urgency": urgency,
-                "location": f"{latitude},{longitude}",
-                "address": loc_display,
-                "Status": "Pending",
+                "location": f"{latitude},{longitude}", # Coords for Map
+                "address": loc_display,                 # Address for Hover
+                "Status": "Pending",                    # Status for Active Cases
             },
             timeout=5
         )
     except: pass
 
     # 6. EMAIL
-    # Fix: Search for category INSIDE department name
+    # Route to correct department based on category name
     dept = next((d for d in OFFICERS if category.lower() in d["name"].lower()), OFFICERS[0])
 
-    # Generate Email
     email_body = drafting_agent(name, email, complaint, full_location, category, urgency)
 
-    # Send Email
     payload = {
         "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
         "to": [{"address": dept["email"]}],
@@ -413,3 +400,4 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "Active"}
+        
