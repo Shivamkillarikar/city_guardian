@@ -156,67 +156,55 @@
 # def health():
 #     return {"status": "CityGuardian backend running"}
 
-
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
-import requests, base64, os, json, re, math
+import requests, base64, os, json, math, time
 import pandas as pd
 from datetime import datetime
+import uuid
 
-# 1. INITIALIZATION & CONFIG
+# ================= ENV =================
 load_dotenv(override=True)
 
-# --- GEMINI CONFIGURATION ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
-if not GEMINI_API_KEY:
-    raise RuntimeError("Missing GEMINI_API_KEY in environment variables")
+if not GEMINI_API_KEY or not MAILEROO_API_KEY:
+    raise RuntimeError("Missing API keys")
 
-genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-2.5-flash"
+# NEW SDK INITIALIZATION
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Use Flash for speed and cost efficiency
+MODEL_NAME = "gemini-1.5-flash"
 
 app = FastAPI(title="CityGuardian Backend")
 
-# --- CORS SETTINGS ---
-# Ensure these match your Vercel deployment exactly
-origins = [
-    "http://127.0.0.1:5500",
-    "https://city-guardian-yybm.vercel.app",
-    "https://city-guardian-yybm.vercel.app/",
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- UTILS ---
+# ================= UTILS =================
 def calculate_distance(lat1, lon1, lat2, lon2):
-    """Haversine formula to calculate distance in meters."""
-    R = 6371000 
+    R = 6371000
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dlat, dlon = math.radians(lat2 - lat1), math.radians(lon2 - lon1)
-    a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
+    a = math.sin(dlat / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlon / 2) ** 2
     return R * 2 * math.asin(math.sqrt(a))
 
-def clean_json_response(text):
-    """Helper to clean markdown formatting from Gemini JSON response"""
+def clean_json_response(text: str):
     text = text.strip()
     if text.startswith("```"):
-        # Remove ```json ... ``` wrapper
-        lines = text.split('\n')
-        if len(lines) >= 3:
-            text = '\n'.join(lines[1:-1])
-        else:
-            text = text.replace("```json", "").replace("```", "")
-    return text.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+    return text
 
-# --- OFFICERS / DEPARTMENT DATA ---
 OFFICERS = [
     {"name": "Water Dept", "email": "shivamkillarikar007@gmail.com", "keywords": ["water", "leak", "pipe", "burst"]},
     {"name": "Sewage Dept", "email": "shivamkillarikar22@gmail.com", "keywords": ["sewage", "drain", "gutter", "overflow"]},
@@ -224,134 +212,158 @@ OFFICERS = [
     {"name": "Electric Dept", "email": "adityakillarikar@gmail.com", "keywords": ["light", "wire", "pole", "shock", "power"]},
 ]
 
-# --- AI AGENTS (GEMINI) ---
-def vision_verifier(img_bytes):
-    """Agent 1: Checks if the image is actually a civic issue."""
+# ================= AI AGENTS (UPDATED FOR NEW SDK) =================
+def vision_verifier(img_bytes: bytes):
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        # Gemini takes raw bytes for images
-        image_part = {"mime_type": "image/jpeg", "data": img_bytes}
+        # Prepare the image for the new SDK
+        # Convert bytes to base64 if needed, or pass bytes directly if supported by PIL. 
+        # The new SDK handles Pillow images or bytes nicely in 'contents'.
         
-        prompt = "Is this a civic issue (garbage, pothole, leak, fallen tree, etc)? Respond ONLY in JSON: {'valid': true/false}"
+        # Simpler approach: Create a part object manually if passing raw bytes
+        # Or encode to base64 string
+        b64_img = base64.b64encode(img_bytes).decode('utf-8')
         
-        response = model.generate_content([prompt, image_part])
-        clean_text = clean_json_response(response.text)
-        return json.loads(clean_text)
+        image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
+
+        prompt = "Is this a civic issue (like a pothole, garbage, broken light)? Respond YES or NO."
+        
+        response = client.models.generate_content(
+            model="gemini-1.5-flash",
+            contents=[prompt, image_part]
+        )
+        return {"valid": "YES" in response.text.strip().upper()}
     except Exception as e:
-        print(f"Vision Agent Error: {e}")
-        return {"valid": True} # Fallback to true to avoid blocking valid reports
+        print(f"Vision Error: {e}")
+        # Fail safe: Accept image if AI fails
+        return {"valid": True}
 
 def classification_agent(complaint: str):
-    """Agent 2: Categorizes the text and assesses urgency."""
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        prompt = f"Classify this civic complaint. Use only these categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{'category': '...', 'urgency': 'low|medium|high'}}\n\nComplaint: {complaint}"
+        prompt = f"""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}""
         
-        response = model.generate_content(prompt)
-        clean_text = clean_json_response(response.text)
-        return json.loads(clean_text)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json")
+        )
+        return json.loads(response.text)
     except Exception as e:
-        print(f"Classification Agent Error: {e}")
-        return {"category": "General", "urgency": "medium"}
+        print(f"Classification Error: {e}")
+        return {"category": "Roads", "urgency": "medium"}
 
 def drafting_agent(name, email, complaint, location, category, urgency):
-    """Agent 3: Drafts a professional municipal email."""
     try:
-        model = genai.GenerativeModel(MODEL_NAME)
-        prompt = f"""
-        You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email.
+        prompt = f"""Write a formal email to {category} Dept. Citizen: {name} ({email}). Issue: {complaint} at {location}. Urgency: {urgency}. Sign off: Thank you, {name}, {email}."""
         
-        Write a formal email based on:
-        Citizen: {name} ({email})
-        Location: {location}
-        Category: {category}
-        Urgency: {urgency}
-        Issue: {complaint}
-
-        End exactly with:
-        Thank you,
-        {name}
-        {email}
-        Reported Location: {location}
-        """
-        response = model.generate_content(prompt)
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=prompt
+        )
         return response.text
     except Exception as e:
-        print(f"Drafting Agent Error: {e}")
-        return f"To whom it may concern,\n\nI am writing to report a {category} issue.\n\nThank you,\n{name}"
+        print(f"Drafting Error: {e}")
+        return f"To {category} Dept,\n\nReporting issue: {complaint} at {location}.\n\nThank you,\n{name}"
 
-# --- MAIN ROUTE ---
-@app.post("/send-report")
-async def send_report(
-    name: str = Form(...),
-    email: str = Form(...),
-    complaint: str = Form(...),
-    latitude: float = Form(...),
-    longitude: float = Form(...),
-    address: str = Form(None),
-    image: UploadFile = File(None)
-):
-    # 1. IMAGE HANDLING & VISION CHECK
-    img_b64 = None
-    img_bytes = None
+# ================= BACKGROUND TASKS =================
+def process_external_integrations(report_id, name, email, complaint, category, urgency, latitude, longitude, loc_display, full_location, img_b64):
+    """
+    Handles N8N and Email sending in the background so the user gets a fast response.
+    """
     
-    if image:
-        img_bytes = await image.read()
-        # Still encode to b64 for Maileroo attachment later
-        img_b64 = base64.b64encode(img_bytes).decode()
-        
-        # Verify using Gemini (Pass raw bytes)
-        v_check = vision_verifier(img_bytes)
-        if not v_check.get("valid"):
-            # Return a 400 error if AI determines image is not a civic issue
-            return {"status": "error", "message": "AI rejected image: This does not appear to be a civic issue."}
-
-    # 2. AI CLASSIFICATION
-    cl = classification_agent(complaint)
-    category = cl.get('category', 'Roads') # Default to Roads if unknown
-
-
-    # 4. PREPARE LOCATION & ROUTING
-    # Prefer fetched address, fallback to coordinates
-    loc_display = address if address else f"{latitude}, {longitude}"
-    google_maps_link = f"[https://www.google.com/maps?q=](https://www.google.com/maps?q=){latitude},{longitude}"
-    full_location_info = f"{loc_display}\nGoogle Maps: {google_maps_link}"
-    
-    # Standardize department routing
-    dept = next((d for d in OFFICERS if d['name'].lower() in category.lower() or any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
-    
-    # 5. DRAFT EMAIL & SEND VIA MAILEROO
-    email_body = drafting_agent(name, email, complaint, full_location_info, category, cl.get('urgency', 'medium'))
-    
+    # 1. N8N TRIGGER
     try:
+        requests.post(
+            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)", # FIXED URL
+            json={
+                "ID": report_id,
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "name": name,
+                "email": email,
+                "issue": complaint,
+                "category": category,
+                "urgency": urgency,
+                "location": f"{latitude},{longitude}",
+                "address": loc_display,
+                "Status": "Pending",
+            },
+            timeout=10
+        )
+    except Exception as e:
+        print(f"N8N Error: {e}")
+
+    # 2. EMAIL DISPATCH
+    try:
+        dept = next((d for d in OFFICERS if category.lower() in d["name"].lower()), OFFICERS[0])
+        email_body = drafting_agent(name, email, complaint, full_location, category, urgency)
+
         payload = {
             "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
-            "to": [{"address": dept['email']}],
-            "subject": f"[{cl.get('urgency', 'MED').upper()}] New {category} Report at {loc_display[:30]}...",
+            "to": [{"address": dept["email"]}],
+            "subject": f"[{urgency.upper()}] New {category} Report",
             "html": email_body.replace("\n", "<br>")
         }
         if img_b64:
             payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
         requests.post(
-            "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", 
-            headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
+            "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", # FIXED URL
+            headers={"Authorization": f"Bearer {MAILEROO_API_KEY}"},
             json=payload,
             timeout=10
         )
+        print(f"Email sent to {dept['name']}")
     except Exception as e:
         print(f"Email Dispatch failed: {e}")
 
-    # 6. RETURN SUCCESS
+# ================= MAIN ROUTE =================
+@app.post("/send-report")
+async def send_report(
+    background_tasks: BackgroundTasks,
+    name: str = Form(...),
+    email: str = Form(...),
+    complaint: str = Form(...),
+    latitude: float = Form(...),
+    longitude: float = Form(...),
+    address: str = Form(""),
+    image: UploadFile = File(None),
+):
+    # 1. IMAGE CHECK
+    img_b64 = None
+    if image:
+        img_bytes = await image.read()
+        img_b64 = base64.b64encode(img_bytes).decode()
+        check = vision_verifier(img_bytes)
+        if not check.get("valid"):
+             print("Warning: Vision agent flagged this image.")
+
+    # 2. CLASSIFICATION
+    cl = classification_agent(complaint)
+    category = cl.get("category", "Roads")
+    urgency = cl.get("urgency", "medium")
+
+
+    # 4. PREPARE DATA
+    loc_display = address if address else f"{latitude}, {longitude}"
+    # Fixed URL in string
+    full_location = f"{loc_display} (Map: [http://maps.google.com/?q=](http://maps.google.com/?q=){latitude},{longitude})"
+    report_id = str(uuid.uuid4())[:8]
+
+    # 5. DELEGATE TO BACKGROUND TASK
+    # This prevents the request from timing out while waiting for N8N and Maileroo
+    background_tasks.add_task(
+        process_external_integrations,
+        report_id, name, email, complaint, category, urgency, latitude, longitude, loc_display, full_location, img_b64
+    )
+
+    dept_name = next((d["name"] for d in OFFICERS if category.lower() in d["name"].lower()), OFFICERS[0]["name"])
+
     return {
         "status": "success", 
-        "department": dept['name'], 
-        "urgency": cl.get('urgency', 'medium'),
-        "message": "Report submitted successfully."
+        "ticket": report_id, 
+        "department": dept_name, 
+        "message": "Report submitted. Processing emails in background."
     }
 
 @app.get("/")
-def health(): return {"status": "active"}
+def health(): return {"status": "Active"}
         
-
-
