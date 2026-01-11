@@ -176,7 +176,7 @@ if not GEMINI_API_KEY:
     raise RuntimeError("Missing GEMINI_API_KEY in environment variables")
 
 genai.configure(api_key=GEMINI_API_KEY)
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-2.5-flash"
 
 app = FastAPI(title="CityGuardian Backend")
 
@@ -310,37 +310,6 @@ async def send_report(
     cl = classification_agent(complaint)
     category = cl.get('category', 'Roads') # Default to Roads if unknown
 
-    # 3. GEOSPATIAL DUPLICATE DETECTION
-    SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
-    SHEET_URL = f'[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){SHEET_ID}/export?format=csv'
-    
-    try:
-        # Fetching the sheet via pandas
-        df = pd.read_csv(SHEET_URL)
-        df.columns = df.columns.str.strip()
-        
-        # Check only 'Pending' issues to find active duplicates
-        if 'Status' in df.columns and 'Location' in df.columns:
-            pending = df[df['Status'].astype(str).str.strip().str.capitalize() == 'Pending']
-            
-            for _, row in pending.iterrows():
-                try:
-                    loc_str = str(row['Location'])
-                    if ',' in loc_str:
-                        ex_lat, ex_lon = map(float, loc_str.split(','))
-                        # Use 50-meter threshold for duplication
-                        if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
-                            # RAISE 409: This allows frontend to show the 'Duplicate' message
-                            raise HTTPException(
-                                status_code=409, 
-                                detail=f"Duplicate Request: Ticket #{row.get('ID', 'N/A')} already covers this {category} issue at your location."
-                            )
-                except (ValueError, TypeError):
-                    continue # Skip malformed location rows in Google Sheet
-    except HTTPException as e: 
-        raise e # Re-raise duplicate error for the frontend
-    except Exception as e: 
-        print(f"Duplicate check log: {e}") # Log error but don't crash the server
 
     # 4. PREPARE LOCATION & ROUTING
     # Prefer fetched address, fallback to coordinates
@@ -384,3 +353,4 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "active"}
         
+
