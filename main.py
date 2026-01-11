@@ -157,27 +157,39 @@
 #     return {"status": "CityGuardian backend running"}
 
 
+
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
+import google.generativeai as genai
 from dotenv import load_dotenv
 import requests, base64, os, json, re, math
 import pandas as pd
 from datetime import datetime
+import uuid
 
 # 1. INITIALIZATION & CONFIG
 load_dotenv(override=True)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# --- GEMINI CONFIGURATION ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
-app = FastAPI(title="CityGuardian Backend")
+if not GEMINI_API_KEY:
+    raise RuntimeError("Missing GEMINI_API_KEY")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Use 'gemini-1.5-flash' for speed and efficiency (comparable to gpt-4o-mini)
+MODEL_NAME = "gemini-1.5-flash"
+
+app = FastAPI(title="CityGuardian Backend (Gemini Powered)")
 
 # --- CORS SETTINGS ---
-# Ensure these match your Vercel deployment exactly
 origins = [
     "http://127.0.0.1:5500",
     "https://city-guardian-yybm.vercel.app",
     "https://city-guardian-yybm.vercel.app/",
+    "https://city-guardian-n8n-integration.vercel.app"
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -196,6 +208,13 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
+def clean_json_response(text):
+    """Helper to clean markdown ```json ... ``` from Gemini response"""
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```json")[-1].split("```")[0]
+    return text.strip()
+
 # --- OFFICERS / DEPARTMENT DATA ---
 OFFICERS = [
     {"name": "Water Dept", "email": "shivamkillarikar007@gmail.com", "keywords": ["water", "leak", "pipe", "burst"]},
@@ -204,54 +223,74 @@ OFFICERS = [
     {"name": "Electric Dept", "email": "adityakillarikar@gmail.com", "keywords": ["light", "wire", "pole", "shock", "power"]},
 ]
 
-# --- AI AGENTS ---
-def vision_verifier(img_b64: str):
+# --- AI AGENTS (GEMINI) ---
+
+def vision_verifier(img_bytes):
     """Agent 1: Checks if the image is actually a civic issue."""
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Is this a civic issue (garbage, pothole, leak, fallen tree, etc)? Respond ONLY in JSON: {'valid': true/false}"},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-            ]}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(res.choices[0].message.content)
-    except: return {"valid": True} # Fallback to true to avoid blocking valid reports
+        model = genai.GenerativeModel(MODEL_NAME)
+        
+        # Gemini handles raw bytes directly for images
+        image_part = {"mime_type": "image/jpeg", "data": img_bytes}
+        
+        prompt = "Is this a civic issue (garbage, pothole, leak, fallen tree, etc)? Respond ONLY in JSON: {'valid': true/false}"
+        
+        response = model.generate_content([prompt, image_part])
+        clean_text = clean_json_response(response.text)
+        return json.loads(clean_text)
+    except Exception as e:
+        print(f"Vision Agent Error: {e}")
+        return {"valid": True} # Fallback
 
 def classification_agent(complaint: str):
     """Agent 2: Categorizes the text and assesses urgency."""
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": f"Classify this civic complaint. Use only these categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{'category': '...', 'urgency': 'low|medium|high'}}\n\nComplaint: {complaint}"}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(res.choices[0].message.content)
-    except: return {"category": "General", "urgency": "medium"}
+        model = genai.GenerativeModel(MODEL_NAME)
+        prompt = f"""
+        Classify this civic complaint. 
+        Use only these categories: Water, Sewage, Roads, Electric. 
+        
+        Complaint: "{complaint}"
+        
+        Respond ONLY in JSON format: 
+        {{
+            "category": "Category Name", 
+            "urgency": "low|medium|high"
+        }}
+        ""
+        
+        response = model.generate_content(prompt)
+        clean_text = clean_json_response(response.text)
+        return json.loads(clean_text)
+    except Exception as e:
+        print(f"Classification Agent Error: {e}")
+        return {"category": "Roads", "urgency": "medium"}
 
 def drafting_agent(name, email, complaint, location, category, urgency):
     """Agent 3: Drafts a professional municipal email."""
-    system_msg = "You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email."
-    user_msg = f"""
-    Write a formal email based on:
-    Citizen: {name} ({email})
-    Location: {location}
-    Category: {category}
-    Urgency: {urgency}
-    Issue: {complaint}
+    try:
+        model = genai.GenerativeModel(MODEL_NAME)
+        prompt = f"""
+        You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email.
+        
+        Details:
+        - Citizen: {name} ({email})
+        - Location: {location}
+        - Category: {category}
+        - Urgency: {urgency}
+        - Issue: {complaint}
 
-    End exactly with:
-    Thank you,
-    {name}
-    {email}
-    Reported Location: {location}
-    """
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}]
-    )
-    return res.choices[0].message.content
+        End exactly with this signature format:
+        Thank you,
+        {name}
+        {email}
+        Reported Location: {location}
+        """
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        print(f"Drafting Agent Error: {e}")
+        return f"To whom it may concern,\n\nI am writing to report a {category} issue.\n\nThank you,\n{name}\n{email}\n{location}"
 
 # --- MAIN ROUTE ---
 @app.post("/send-report")
@@ -261,34 +300,36 @@ async def send_report(
     complaint: str = Form(...),
     latitude: float = Form(...),
     longitude: float = Form(...),
-    address: str = Form(None),
+    address: str = Form(""),
     image: UploadFile = File(None)
 ):
     # 1. IMAGE HANDLING & VISION CHECK
     img_b64 = None
+    img_bytes = None
+    
     if image:
-        content = await image.read()
-        img_b64 = base64.b64encode(content).decode()
-        v_check = vision_verifier(img_b64)
+        img_bytes = await image.read()
+        img_b64 = base64.b64encode(img_bytes).decode()
+        
+        # Verify using Gemini Vision
+        v_check = vision_verifier(img_bytes)
         if not v_check.get("valid"):
-            # Return a 400 error if AI determines image is not a civic issue
             return {"status": "error", "message": "AI rejected image: This does not appear to be a civic issue."}
 
     # 2. AI CLASSIFICATION
     cl = classification_agent(complaint)
-    category = cl.get('category', 'Roads') # Default to Roads if unknown
+    category = cl.get('category', 'Roads')
 
     # 3. GEOSPATIAL DUPLICATE DETECTION
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
-    SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
+    SHEET_URL = f'[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){SHEET_ID}/export?format=csv'
     
     try:
-        # Fetching the sheet via pandas
         df = pd.read_csv(SHEET_URL)
         df.columns = df.columns.str.strip()
         
-        # Check only 'Pending' issues to find active duplicates
         if 'Status' in df.columns and 'Location' in df.columns:
+            # Check for duplicates in Pending items
             pending = df[df['Status'].astype(str).str.strip().str.capitalize() == 'Pending']
             
             for _, row in pending.iterrows():
@@ -296,44 +337,62 @@ async def send_report(
                     loc_str = str(row['Location'])
                     if ',' in loc_str:
                         ex_lat, ex_lon = map(float, loc_str.split(','))
-                        # Use 50-meter threshold for duplication
                         if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
-                            # RAISE 409: This allows frontend to show the 'Duplicate' message
                             raise HTTPException(
                                 status_code=409, 
-                                detail=f"Duplicate Request: Ticket #{row.get('ID', 'N/A')} already covers this {category} issue at your location."
+                                detail=f"Duplicate Request: Ticket #{row.get('ID', 'N/A')} already covers this {category} issue."
                             )
                 except (ValueError, TypeError):
-                    continue # Skip malformed location rows in Google Sheet
+                    continue
     except HTTPException as e: 
-        raise e # Re-raise duplicate error for the frontend
+        raise e
     except Exception as e: 
-        print(f"Duplicate check log: {e}") # Log error but don't crash the server
+        print(f"Duplicate check log: {e}")
 
-    # 4. PREPARE LOCATION & ROUTING
-    # Prefer fetched address, fallback to coordinates
+    # 4. LOCATION & ROUTING PREP
     loc_display = address if address else f"{latitude}, {longitude}"
-    google_maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
+    google_maps_link = f"[https://www.google.com/maps?q=](https://www.google.com/maps?q=){latitude},{longitude}"
     full_location_info = f"{loc_display}\nGoogle Maps: {google_maps_link}"
     
-    # Standardize department routing
+    # 5. TRIGGER N8N (With correct fields for Dashboard)
+    report_id = str(uuid.uuid4())[:8]
+    n8n_data = {
+        "ID": report_id,
+        "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "name": name,
+        "email": email,
+        "issue": complaint,
+        "category": category,
+        "urgency": cl.get('urgency', 'medium'),
+        "location": f"{latitude}, {longitude}", # Coords for Dashboard Map
+        "address": loc_display,                 # Address for Tooltip/Sheet
+        "Status": "Pending"                     # Hardcoded to fix "space after g" bug
+    }
+    
+    try:
+        # REPLACE WITH YOUR N8N URL
+        n8n_url = "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)"
+        requests.post(n8n_url, json=n8n_data, timeout=5)
+    except Exception as e:
+        print(f"n8n trigger failed: {e}")
+
+    # 6. DRAFT EMAIL & SEND
     dept = next((d for d in OFFICERS if d['name'].lower() in category.lower() or any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
     
-    # 5. DRAFT EMAIL & SEND VIA MAILEROO
     email_body = drafting_agent(name, email, complaint, full_location_info, category, cl.get('urgency', 'medium'))
     
     try:
         payload = {
             "from": {"address": "no-reply@ead86fd4bcfd6c15.maileroo.org", "display_name": "CityGuardian"},
             "to": [{"address": dept['email']}],
-            "subject": f"[{cl.get('urgency', 'MED').upper()}] New {category} Report at {loc_display[:30]}...",
+            "subject": f"[{cl.get('urgency', 'MED').upper()}] New {category} Report",
             "html": email_body.replace("\n", "<br>")
         }
         if img_b64:
             payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
         requests.post(
-            "https://smtp.maileroo.com/api/v2/emails", 
+            "[https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails)", 
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}", "Content-Type": "application/json"},
             json=payload,
             timeout=10
@@ -341,7 +400,6 @@ async def send_report(
     except Exception as e:
         print(f"Email Dispatch failed: {e}")
 
-    # 6. RETURN SUCCESS
     return {
         "status": "success", 
         "department": dept['name'], 
@@ -350,8 +408,8 @@ async def send_report(
     }
 
 @app.get("/")
-def health(): return {"status": "active"}
-    
-        
+def health(): return {"status": "CityGuardian (Gemini) Active"}
+
+
 
 
