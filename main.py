@@ -282,34 +282,43 @@ async def send_report(
     # 3. GEOSPATIAL DUPLICATE DETECTION
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
     SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
-    
+
+    # 3. SMART DUPLICATE DETECTION (Location + Keywords)
     try:
-        # Fetching the sheet via pandas
-        df = pd.read_csv(SHEET_URL)
-        df.columns = df.columns.str.strip()
+        SHEET_ID = "1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI"
+        SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
         
-        # Check only 'Pending' issues to find active duplicates
-        if 'Status' in df.columns and 'Location' in df.columns:
-            pending = df[df['Status'].astype(str).str.strip().str.capitalize() == 'Pending']
+        df = pd.read_csv(SHEET_URL)
+        if {"Status", "Location", "issue"}.issubset(df.columns):
+            # Only check 'Pending' reports
+            pending = df[df["Status"].astype(str).str.lower().str.strip() == "pending"]
+            
+            # Define keywords to look for
+            issue_keywords = ["pothole", "drainage", "leak", "garbage", "light", "sewage", "wire"]
+            
+            # Find keywords in the CURRENT complaint
+            current_keywords = {k for k in issue_keywords if k in complaint.lower()}
             
             for _, row in pending.iterrows():
                 try:
-                    loc_str = str(row['Location'])
-                    if ',' in loc_str:
-                        ex_lat, ex_lon = map(float, loc_str.split(','))
-                        # Use 50-meter threshold for duplication
-                        if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
-                            # RAISE 409: This allows frontend to show the 'Duplicate' message
+                    # 1. Check Distance
+                    lat, lon = map(float, str(row["Location"]).split(","))
+                    if calculate_distance(latitude, longitude, lat, lon) < 50:
+                        
+                        # 2. Check for matching keywords in the existing 'issue' column
+                        existing_issue = str(row.get("issue", "")).lower()
+                        matching_keywords = [k for k in current_keywords if k in existing_issue]
+                        
+                        if matching_keywords:
+                            # Flag as duplicate only if location AND at least one keyword match
                             raise HTTPException(
                                 status_code=409, 
-                                detail=f"Duplicate Request: Ticket #{row.get('ID', 'N/A')} already covers this {category} issue at your location."
+                                detail=f"Duplicate report: A ticket for a '{matching_keywords[0]}' issue already exists at this location."
                             )
-                except (ValueError, TypeError):
-                    continue # Skip malformed location rows in Google Sheet
-    except HTTPException as e: 
-        raise e # Re-raise duplicate error for the frontend
-    except Exception as e: 
-        print(f"Duplicate check log: {e}") # Log error but don't crash the server
+                except (ValueError, TypeError): continue
+    except HTTPException: raise
+    except Exception as e: print(f"Duplicate check log: {e}")
+        
 
     # 4. PREPARE LOCATION & ROUTING
     # Prefer fetched address, fallback to coordinates
@@ -354,4 +363,5 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
