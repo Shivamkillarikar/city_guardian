@@ -331,7 +331,7 @@ def process_external_integrations(report_id, name, email, complaint, category, u
 
         # Corrected URL (removed brackets)
         response = requests.post(
-            "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", 
+            "https://smtp.maileroo.com/api/v2/emails", 
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}"},
             json=payload,
             timeout=10
@@ -390,5 +390,6 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "Active"}
+
 
 
