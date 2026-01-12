@@ -337,8 +337,6 @@ async def send_report(
                 "category": category,
                 "urgency": urgency,
                 "location": f"{latitude},{longitude}",
-                "address": loc_display,
-                "Status": "Pending",
             },
             timeout=5
         )
@@ -381,6 +379,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
