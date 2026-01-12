@@ -285,8 +285,7 @@ def process_external_integrations(report_id, name, email, complaint, category, u
                 "location": f"{latitude},{longitude}",
                 "address": loc_display,
                 "Status": "Pending",
-            },
-            timeout=10
+            }
         )
     except Exception as e:
         print(f"N8N Error: {e}")
@@ -308,8 +307,7 @@ def process_external_integrations(report_id, name, email, complaint, category, u
         requests.post(
             "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", # FIXED URL
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}"},
-            json=payload,
-            timeout=10
+            json=payload
         )
         print(f"Email sent to {dept['name']}")
     except Exception as e:
@@ -367,6 +365,7 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "Active"}
         
+
 
 
 
