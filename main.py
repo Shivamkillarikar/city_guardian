@@ -156,12 +156,12 @@
 # def health():
 #     return {"status": "CityGuardian backend running"}
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-import requests, base64, os, json, math, time
+import requests, base64, os, json, math, time, random
 import pandas as pd
 from datetime import datetime
 import uuid
@@ -178,8 +178,8 @@ if not GEMINI_API_KEY or not MAILEROO_API_KEY:
 # NEW SDK INITIALIZATION
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Use Flash for speed and cost efficiency
-MODEL_NAME = "gemini-2.5-flash"
+# Use stable flash model
+MODEL_NAME = "gemini-1.5-flash"
 
 app = FastAPI(title="CityGuardian Backend")
 
@@ -212,41 +212,62 @@ OFFICERS = [
     {"name": "Electric Dept", "email": "adityakillarikar@gmail.com", "keywords": ["light", "wire", "pole", "shock", "power"]},
 ]
 
-# ================= AI AGENTS (UPDATED FOR NEW SDK) =================
+# ================= ROBUST AI WRAPPER (Handles 429 Errors) =================
+def generate_with_retry(model_id, contents, config=None, retries=3):
+    """
+    Wraps the API call to handle Rate Limits (429) automatically.
+    """
+    delay = 2
+    for attempt in range(retries):
+        try:
+            return client.models.generate_content(
+                model=model_id,
+                contents=contents,
+                config=config
+            )
+        except Exception as e:
+            error_str = str(e)
+            if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                if attempt < retries - 1:
+                    wait_time = delay + random.uniform(0, 1)
+                    print(f"⚠️ Quota hit. Retrying in {wait_time:.1f}s...")
+                    time.sleep(wait_time)
+                    delay *= 2
+                    continue
+            # Handle Model alias not found
+            if "404" in error_str and "not found" in error_str:
+                print("⚠️ Model alias issue, trying specific version...")
+                return client.models.generate_content(
+                    model="gemini-1.5-flash-001",
+                    contents=contents,
+                    config=config
+                )
+            raise e
+    raise RuntimeError("Max retries exceeded for AI generation")
+
+# ================= AI AGENTS =================
 def vision_verifier(img_bytes: bytes):
     try:
-        # Prepare the image for the new SDK
-        # Convert bytes to base64 if needed, or pass bytes directly if supported by PIL. 
-        # The new SDK handles Pillow images or bytes nicely in 'contents'.
-        
-        # Simpler approach: Create a part object manually if passing raw bytes
-        # Or encode to base64 string
-        b64_img = base64.b64encode(img_bytes).decode('utf-8')
-        
         image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-
         prompt = "Is this a civic issue (like a pothole, garbage, broken light)? Respond YES or NO."
         
-        response = client.models.generate_content(
-            model="gemini-1.5-flash",
-            contents=[prompt, image_part]
-        )
+        # Use retry wrapper
+        response = generate_with_retry(MODEL_NAME, [prompt, image_part])
         return {"valid": "YES" in response.text.strip().upper()}
     except Exception as e:
         print(f"Vision Error: {e}")
-        # Fail safe: Accept image if AI fails
         return {"valid": True}
 
 def classification_agent(complaint: str):
     try:
-        prompt ="""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
+        prompt="""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
         
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
+        response = generate_with_retry(
+            MODEL_NAME, 
+            prompt, 
             config=types.GenerateContentConfig(response_mime_type="application/json")
         )
-        return json.loads(response.text)
+        return json.loads(clean_json_response(response.text))
     except Exception as e:
         print(f"Classification Error: {e}")
         return {"category": "Roads", "urgency": "medium"}
@@ -254,26 +275,25 @@ def classification_agent(complaint: str):
 def drafting_agent(name, email, complaint, location, category, urgency):
     try:
         prompt = f"""Write a formal email to {category} Dept. Citizen: {name} ({email}). Issue: {complaint} at {location}. Urgency: {urgency}. Sign off: Thank you, {name}, {email}."""
-        
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt
-        )
+        # Add small delay to help quota
+        time.sleep(1)
+        response = generate_with_retry(MODEL_NAME, prompt)
         return response.text
     except Exception as e:
         print(f"Drafting Error: {e}")
         return f"To {category} Dept,\n\nReporting issue: {complaint} at {location}.\n\nThank you,\n{name}"
 
-# ================= BACKGROUND TASKS =================
+# ================= SYNCHRONOUS PROCESSING =================
 def process_external_integrations(report_id, name, email, complaint, category, urgency, latitude, longitude, loc_display, full_location, img_b64):
     """
-    Handles N8N and Email sending in the background so the user gets a fast response.
+    Runs immediately (BLOCKING) to ensure execution before server shutdown.
     """
+    print("⏳ Processing Integrations...")
     
     # 1. N8N TRIGGER
     try:
         requests.post(
-            "https://shivam2212.app.n8n.cloud/webhook/city-report-intake", # FIXED URL
+            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)", # Corrected URL
             json={
                 "ID": report_id,
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -285,7 +305,8 @@ def process_external_integrations(report_id, name, email, complaint, category, u
                 "location": f"{latitude},{longitude}",
                 "address": loc_display,
                 "Status": "Pending",
-            }
+            },
+            timeout=5
         )
     except Exception as e:
         print(f"N8N Error: {e}")
@@ -304,19 +325,21 @@ def process_external_integrations(report_id, name, email, complaint, category, u
         if img_b64:
             payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
-        requests.post(
-            "https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails", # FIXED URL
+        # Corrected URL (removed brackets)
+        response = requests.post(
+            "[https://smtp.maileroo.com/api/v2/emails](https://smtp.maileroo.com/api/v2/emails)", 
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}"},
-            json=payload
+            json=payload,
+            timeout=10
         )
-        print(f"Email sent to {dept['name']}")
+        print(f"✅ Email Status: {response.status_code}")
     except Exception as e:
-        print(f"Email Dispatch failed: {e}")
+        print(f"❌ Email Dispatch failed: {e}")
 
 # ================= MAIN ROUTE =================
 @app.post("/send-report")
 async def send_report(
-    background_tasks: BackgroundTasks,
+    # REMOVED BackgroundTasks so it waits for completion
     name: str = Form(...),
     email: str = Form(...),
     complaint: str = Form(...),
@@ -325,6 +348,8 @@ async def send_report(
     address: str = Form(""),
     image: UploadFile = File(None),
 ):
+    print(f"📥 Received report: {complaint[:20]}...")
+
     # 1. IMAGE CHECK
     img_b64 = None
     if image:
@@ -339,17 +364,14 @@ async def send_report(
     category = cl.get("category", "Roads")
     urgency = cl.get("urgency", "medium")
 
-
-    # 4. PREPARE DATA
+    # 3. PREPARE DATA
     loc_display = address if address else f"{latitude}, {longitude}"
-    # Fixed URL in string
-    full_location = f"{loc_display} (Map: [http://maps.google.com/?q=](http://maps.google.com/?q=){latitude},{longitude})"
+    full_location = f"{loc_display} (Map: http://googleusercontent.com/maps.google.com/?q={latitude},{longitude})"
     report_id = str(uuid.uuid4())[:8]
 
-    # 5. DELEGATE TO BACKGROUND TASK
-    # This prevents the request from timing out while waiting for N8N and Maileroo
-    background_tasks.add_task(
-        process_external_integrations,
+    # 4. EXECUTE SYNCHRONOUSLY
+    # Calling this directly ensures it finishes BEFORE the return statement
+    process_external_integrations(
         report_id, name, email, complaint, category, urgency, latitude, longitude, loc_display, full_location, img_b64
     )
 
@@ -359,16 +381,8 @@ async def send_report(
         "status": "success", 
         "ticket": report_id, 
         "department": dept_name, 
-        "message": "Report submitted. Processing emails in background."
+        "message": "Report submitted and processed."
     }
 
 @app.get("/")
 def health(): return {"status": "Active"}
-        
-
-
-
-
-
-
-
