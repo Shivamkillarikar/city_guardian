@@ -165,7 +165,7 @@ from dotenv import load_dotenv
 import requests, base64, os, json, re, math
 import pandas as pd
 from datetime import datetime
-
+import uuid
 # 1. INITIALIZATION & CONFIG
 load_dotenv(override=True)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -384,6 +384,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
