@@ -284,37 +284,50 @@ async def send_report(
     SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
 
     # 3. SMART DUPLICATE DETECTION (Location + Keywords)
+        # 3. SMART DUPLICATE DETECTION (High Reliability Version)
     try:
+        # FIX 1: Add a timestamp to the URL to bypass Google's 5-minute CSV cache
+        import time
+        SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&t={int(time.time())}"
+        
         df = pd.read_csv(SHEET_URL)
+        
+        # FIX 2: Standardize column names by stripping hidden whitespace
+        df.columns = [c.strip() for c in df.columns]
+
         if {"Status", "Location", "issue"}.issubset(df.columns):
-            # Only check 'Pending' reports
-            pending = df[df["Status"] == "Pending"]
+            # FIX 3: Clean the 'Status' column to handle "Pending " vs "Pending"
+            pending = df[df["Status"].astype(str).str.lower().str.strip() == "pending"]
             
-            # Define keywords to look for
             issue_keywords = ["pothole", "drainage", "leak", "garbage", "light", "sewage", "wire"]
-            
-            # Find keywords in the CURRENT complaint
             current_keywords = {k for k in issue_keywords if k in complaint.lower()}
             
             for _, row in pending.iterrows():
                 try:
-                    # 1. Check Distance
-                    lat, lon = map(float, str(row["Location"]).split(","))
-                    if calculate_distance(latitude, longitude, lat, lon) < 50:
+                    # FIX 4: Remove all spaces from location string before splitting
+                    loc_str = str(row["Location"]).replace(" ", "")
+                    if ',' in loc_str:
+                        ex_lat, ex_lon = map(float, loc_str.split(','))
                         
-                        # 2. Check for matching keywords in the existing 'issue' column
-                        existing_issue = str(row.get("issue", "")).lower()
-                        matching_keywords = [k for k in current_keywords if k in existing_issue]
-                        
-                        if matching_keywords:
-                            # Flag as duplicate only if location AND at least one keyword match
-                            raise HTTPException(
-                                status_code=409, 
-                                detail=f"Duplicate report: A ticket for a '{matching_keywords[0]}' issue already exists at this location."
-                            )
-                except (ValueError, TypeError): continue
-    except HTTPException: raise
-    except Exception as e: print(f"Duplicate check log: {e}")
+                        # Check Proximity (50 meters)
+                        if calculate_distance(latitude, longitude, ex_lat, ex_lon) < 50:
+                            
+                            # Check for matching keywords in the existing 'issue' column
+                            existing_issue = str(row.get("issue", "")).lower()
+                            matching_keywords = [k for k in current_keywords if k in existing_issue]
+                            
+                            if matching_keywords:
+                                # Found a match: Same location AND same keyword
+                                raise HTTPException(
+                                    status_code=409, 
+                                    detail=f"Duplicate report: A ticket for a '{matching_keywords[0]}' issue already exists here."
+                                )
+                except (ValueError, TypeError): 
+                    continue 
+    except HTTPException: 
+        raise 
+    except Exception as e: 
+        print(f"Duplicate check log: {e}")
         
 
     # 4. PREPARE LOCATION & ROUTING
@@ -379,6 +392,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
