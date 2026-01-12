@@ -330,7 +330,7 @@ async def send_report(
     try:
         # Correct URL format:
         requests.post(
-            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)",
+            "https://shivam2212.app.n8n.cloud/webhook/city-report-intake",
             json={
                 "ID": report_id,
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -384,6 +384,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
