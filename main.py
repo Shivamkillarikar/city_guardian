@@ -179,13 +179,17 @@ if not GEMINI_API_KEY or not MAILEROO_API_KEY:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Use stable flash model
-MODEL_NAME = "gemini-1.5-flash"
-
+MODEL_NAME = "gemini-2.5-flash"
+origins = [
+    "http://127.0.0.1:5500",
+    "https://city-guardian-yybm.vercel.app",
+    "https://city-guardian-yybm.vercel.app/"
+]
 app = FastAPI(title="CityGuardian Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -386,3 +390,4 @@ async def send_report(
 
 @app.get("/")
 def health(): return {"status": "Active"}
+
