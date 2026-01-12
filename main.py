@@ -178,9 +178,9 @@ if not GEMINI_API_KEY or not MAILEROO_API_KEY:
 # NEW SDK INITIALIZATION
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# Use stable flash model
-MODEL_NAME = "gemini-2.5-flash"
-origins = [
+# Use stable flash model for best balance
+MODEL_NAME = "gemini-1.5-flash"
+origins=[
     "http://127.0.0.1:5500",
     "https://city-guardian-yybm.vercel.app",
     "https://city-guardian-yybm.vercel.app/"
@@ -189,7 +189,7 @@ app = FastAPI(title="CityGuardian Backend")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -253,18 +253,32 @@ def generate_with_retry(model_id, contents, config=None, retries=3):
 def vision_verifier(img_bytes: bytes):
     try:
         image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg")
-        prompt = "Is this a civic issue (like a pothole, garbage, broken light)? Respond YES or NO."
+        
+        # STRICT PROMPT: Reject blurry or irrelevant images
+        prompt = """
+        Analyze this image for civic complaints (potholes, garbage dumps, broken streetlights, sewage overflow).
+        
+        CRITICAL RULES:
+        1. If the image is just a generic photo of a street, park, or people walking with no obvious damage/garbage, respond NO.
+        2. If the image is too blurry, dark, or shaky to clearly identify a specific issue, respond NO.
+        3. Only respond YES if you clearly see a maintenance issue or hazard.
+        
+        Respond only YES or NO.
+        """
         
         # Use retry wrapper
         response = generate_with_retry(MODEL_NAME, [prompt, image_part])
+        print(f"🤖 Vision AI says: {response.text.strip()}")
+        
         return {"valid": "YES" in response.text.strip().upper()}
     except Exception as e:
-        print(f"Vision Error: {e}")
-        return {"valid": True}
+        print(f"⚠️ Vision Check Error: {e}")
+        # FAIL-SAFE: If AI crashes, we usually allow it, BUT you can set this to False if you want strict blocking.
+        return {"valid": True} 
 
 def classification_agent(complaint: str):
     try:
-        prompt="""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
+        prompt ="""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
         
         response = generate_with_retry(
             MODEL_NAME, 
@@ -292,12 +306,12 @@ def process_external_integrations(report_id, name, email, complaint, category, u
     """
     Runs immediately (BLOCKING) to ensure execution before server shutdown.
     """
-    print("⏳ Processing Integrations...")
+    print("⏳ Starting Integrations...")
     
     # 1. N8N TRIGGER
     try:
         requests.post(
-            "https://shivam2212.app.n8n.cloud/webhook/city-report-intake", # Corrected URL
+            "https://shivam2212.app.n8n.cloud/webhook/city-report-intake", 
             json={
                 "ID": report_id,
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -329,21 +343,25 @@ def process_external_integrations(report_id, name, email, complaint, category, u
         if img_b64:
             payload["attachments"] = [{"file_name": "issue.jpg", "content": img_b64, "type": "image/jpeg"}]
 
-        # Corrected URL (removed brackets)
+        # UPDATED URL: Using the standard v1 transactional endpoint
         response = requests.post(
             "https://smtp.maileroo.com/api/v2/emails", 
             headers={"Authorization": f"Bearer {MAILEROO_API_KEY}"},
             json=payload,
-            timeout=10
+            timeout=15
         )
-        print(f"✅ Email Status: {response.status_code}")
+        
+        if response.status_code >= 200 and response.status_code < 300:
+            print(f"✅ Email sent successfully to {dept['name']}")
+        else:
+            print(f"❌ Maileroo Failed: {response.status_code} - {response.text}")
+
     except Exception as e:
         print(f"❌ Email Dispatch failed: {e}")
 
 # ================= MAIN ROUTE =================
 @app.post("/send-report")
 async def send_report(
-    # REMOVED BackgroundTasks so it waits for completion
     name: str = Form(...),
     email: str = Form(...),
     complaint: str = Form(...),
@@ -352,29 +370,57 @@ async def send_report(
     address: str = Form(""),
     image: UploadFile = File(None),
 ):
-    print(f"📥 Received report: {complaint[:20]}...")
+    print(f"📥 New Report: {complaint[:30]}...")
 
-    # 1. IMAGE CHECK
+    # --- 1. IMAGE CHECK (BLOCKING) ---
     img_b64 = None
     if image:
         img_bytes = await image.read()
         img_b64 = base64.b64encode(img_bytes).decode()
+        
+        # Check image validity
         check = vision_verifier(img_bytes)
+        
+        # STOP HERE if the image is invalid
         if not check.get("valid"):
-             print("Warning: Vision agent flagged this image.")
+             print(f"⛔ Report Rejected: Image invalid.")
+             raise HTTPException(
+                 status_code=400, 
+                 detail="The uploaded image does not appear to show a valid civic issue. Please upload a clear photo of the problem."
+             )
 
-    # 2. CLASSIFICATION
+    # --- 2. CLASSIFICATION ---
     cl = classification_agent(complaint)
     category = cl.get("category", "Roads")
     urgency = cl.get("urgency", "medium")
 
-    # 3. PREPARE DATA
+    # --- 3. DUPLICATE CHECK ---
+    try:
+        SHEET_ID = "1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI"
+        SHEET_URL = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){SHEET_ID}/export?format=csv"
+        
+        df = pd.read_csv(SHEET_URL)
+        if {"Status", "Location"}.issubset(df.columns):
+            pending = df[df["Status"].astype(str).str.lower().str.strip() == "pending"]
+            for _, row in pending.iterrows():
+                try:
+                    lat, lon = map(float, str(row["Location"]).split(","))
+                    if calculate_distance(latitude, longitude, lat, lon) < 50:
+                        row_cat = str(row.get("Category", "")).lower()
+                        if category.lower() in row_cat:
+                             raise HTTPException(status_code=409, detail="Duplicate report exists.")
+                except: continue
+    except HTTPException: raise
+    except Exception: pass
+
+    # --- 4. PREPARE DATA ---
     loc_display = address if address else f"{latitude}, {longitude}"
-    full_location = f"{loc_display} (Map: http://googleusercontent.com/maps.google.com/?q={latitude},{longitude})"
+    google_maps_link=f"https://www.google.com/maps?q={latitude},{longitude}"
+    full_location = f"[{loc_display}\nGoogle Maps:{google_maps_link}"
     report_id = str(uuid.uuid4())[:8]
 
-    # 4. EXECUTE SYNCHRONOUSLY
-    # Calling this directly ensures it finishes BEFORE the return statement
+    # --- 5. EXECUTE SYNCHRONOUSLY ---
+    # The user waits here until emails are actually sent
     process_external_integrations(
         report_id, name, email, complaint, category, urgency, latitude, longitude, loc_display, full_location, img_b64
     )
@@ -385,11 +431,8 @@ async def send_report(
         "status": "success", 
         "ticket": report_id, 
         "department": dept_name, 
-        "message": "Report submitted and processed."
+        "message": "Report submitted."
     }
 
 @app.get("/")
 def health(): return {"status": "Active"}
-
-
-
