@@ -273,7 +273,7 @@ def process_external_integrations(report_id, name, email, complaint, category, u
     # 1. N8N TRIGGER
     try:
         requests.post(
-            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)", # FIXED URL
+            "https://shivam2212.app.n8n.cloud/webhook/city-report-intake", # FIXED URL
             json={
                 "ID": report_id,
                 "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -367,6 +367,7 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "Active"}
         
+
 
 
 
