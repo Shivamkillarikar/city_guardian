@@ -288,7 +288,7 @@ async def send_report(
         df = pd.read_csv(SHEET_URL)
         if {"Status", "Location", "issue"}.issubset(df.columns):
             # Only check 'Pending' reports
-            pending = df[df["Status"].astype(str).str.lower().str.strip() == "pending"]
+            pending = df[df["Status"] == "Pending"]
             
             # Define keywords to look for
             issue_keywords = ["pothole", "drainage", "leak", "garbage", "light", "sewage", "wire"]
@@ -381,6 +381,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
