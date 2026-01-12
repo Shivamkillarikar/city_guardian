@@ -278,16 +278,13 @@ async def send_report(
     # 2. AI CLASSIFICATION
     cl = classification_agent(complaint)
     category = cl.get('category', 'Roads') # Default to Roads if unknown
-
+    urgency = cl.get('urgency','medium')
     # 3. GEOSPATIAL DUPLICATE DETECTION
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
     SHEET_URL = f'https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv'
 
     # 3. SMART DUPLICATE DETECTION (Location + Keywords)
     try:
-        SHEET_ID = "1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI"
-        SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
-        
         df = pd.read_csv(SHEET_URL)
         if {"Status", "Location", "issue"}.issubset(df.columns):
             # Only check 'Pending' reports
@@ -384,6 +381,7 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
 
