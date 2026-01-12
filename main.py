@@ -239,8 +239,7 @@ def vision_verifier(img_bytes: bytes):
 
 def classification_agent(complaint: str):
     try:
-        prompt = 
-        """Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
+        prompt ="""Classify this complaint: "{complaint}". Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{"category": "...", "urgency": "low|medium|high"}}"""
         
         response = client.models.generate_content(
             model=MODEL_NAME,
@@ -368,5 +367,6 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "Active"}
         
+
 
 
