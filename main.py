@@ -179,7 +179,7 @@ if not GEMINI_API_KEY or not MAILEROO_API_KEY:
 client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Use Flash for speed and cost efficiency
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-2.0-flash"
 
 app = FastAPI(title="CityGuardian Backend")
 
@@ -367,6 +367,7 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "Active"}
         
+
 
 
 
