@@ -325,6 +325,27 @@ async def send_report(
     loc_display = address if address else f"{latitude}, {longitude}"
     google_maps_link = f"https://www.google.com/maps?q={latitude},{longitude}"
     full_location_info = f"{loc_display}\nGoogle Maps: {google_maps_link}"
+
+    report_id = str(uuid.uuid4())[:8]
+    try:
+        # Correct URL format:
+        requests.post(
+            "[https://shivam2212.app.n8n.cloud/webhook/city-report-intake](https://shivam2212.app.n8n.cloud/webhook/city-report-intake)",
+            json={
+                "ID": report_id,
+                "Date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "name": name,
+                "email": email,
+                "issue": complaint,
+                "category": category,
+                "urgency": urgency,
+                "location": f"{latitude},{longitude}",
+                "address": loc_display,
+                "Status": "Pending",
+            },
+            timeout=5
+        )
+    except: pass
     
     # Standardize department routing
     dept = next((d for d in OFFICERS if d['name'].lower() in category.lower() or any(k in complaint.lower() for k in d['keywords'])), OFFICERS[0])
@@ -363,5 +384,6 @@ async def send_report(
 def health(): return {"status": "active"}
     
     
+
 
 
