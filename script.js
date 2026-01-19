@@ -312,7 +312,7 @@ function generatePDF(name, complaint, dept, address) {
 }
 
 // ---------------- SUBMIT LOGIC ----------------
-document.getElementById("reportForm").addEventListener("submit", async (e) => {
+/*document.getElementById("reportForm").addEventListener("submit", async (e) => {
     e.preventDefault();
     if (!latitude) { showToast("Wait for location to load", "warning"); return; }
 
@@ -355,6 +355,76 @@ document.getElementById("reportForm").addEventListener("submit", async (e) => {
         else if (res.status === 409) {
             // Specific Duplicate Detection Message
             showToast("📍 Duplicate Request: This issue is already in the queue.", "warning");
+        } 
+        else {
+            showToast(data.detail || data.message || "Submission failed", "danger");
+        }
+    } catch (err) {
+        console.error(err);
+        showToast("Server error. Please try again later.", "danger");
+    } finally {
+        showSpinner(false);
+    }
+});
+*/
+
+// ---------------- SUBMIT LOGIC ----------------
+document.getElementById("reportForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!latitude) { showToast("Wait for location to load", "warning"); return; }
+
+    const nameVal = document.getElementById("name").value;
+    const emailVal = document.getElementById("email").value;
+    const complaintVal = document.getElementById("complaint").value;
+    const imageFile = document.getElementById("image").files[0];
+
+    // Validation: Need at least one source of info
+    if (!complaintVal.trim() && !imageFile) {
+        showToast("Please provide a description OR upload a photo.", "warning");
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append("name", nameVal || "Anonymous");
+    formData.append("email", emailVal || "no-email@provided.com");
+    formData.append("complaint", complaintVal);
+    formData.append("latitude", latitude);
+    formData.append("longitude", longitude);
+    formData.append("address", addressText);
+
+    if (imageFile) {
+        formData.append("image", imageFile);
+    }
+
+    showSpinner(true);
+    try {
+        const res = await fetch("https://city-guardian.onrender.com/send-report", { 
+            method: "POST", 
+            body: formData 
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.status === "success") {
+            // Use the AI-generated description if the user left it blank
+            const finalDescription = complaintVal.trim() || data.ai_description || "Image-based report";
+
+            showToast("Success! Downloading Receipt...", "success");
+            
+            // Update UI with the description the AI recognized
+            saveToHistory({ 
+                complaint: finalDescription, 
+                department: data.department, 
+                urgency: data.urgency 
+            });
+            
+            generatePDF(nameVal, finalDescription, data.department, addressText);
+            
+            document.getElementById("reportForm").reset();
+            document.getElementById("imagePreview").classList.add("d-none");
+        } 
+        else if (res.status === 409) {
+            showToast("📍 Duplicate: This issue is already being handled.", "warning");
         } 
         else {
             showToast(data.detail || data.message || "Submission failed", "danger");
@@ -452,6 +522,7 @@ if (SpeechRecognition) {
     document.getElementById("voiceBtn").disabled = true;
     document.getElementById("voiceBtn").innerText = "🎤 Not Supported";
 }
+
 
 
 
