@@ -250,7 +250,7 @@ def classification_agent(complaint: str):
 def drafting_agent(name, email, complaint, location, category, urgency):
     """Drafts a formal municipal email body."""
     try:
-        prompt = f"You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email for {name} ({email}) regarding a {category} issue at {location}. Issue details: {complaint}. Urgency: {urgency}."
+        prompt = f"Write a formal based on Citizen: {name}({email}} Location: {location} Category : {category}  Urgency : {urgency} Issue: {complaint} End exactly with : Thank You /n {name} /n {email} /n Reported Location : {location} ."
         res = model.generate_content(prompt)
         return res.text
     except: return f"Formal report for {category} issue at {location}. Details: {complaint}."
@@ -364,4 +364,5 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "active"}
     
+
 
