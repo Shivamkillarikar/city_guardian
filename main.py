@@ -157,11 +157,9 @@
 #     return {"status": "CityGuardian backend running"}
 
 
-
-
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
+import google.generativeai as genai
 from dotenv import load_dotenv
 import requests, base64, os, json, re, math, time
 import pandas as pd
@@ -170,10 +168,16 @@ import uuid
 
 # 1. INITIALIZATION
 load_dotenv(override=True)
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# Configure Gemini
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+genai.configure(api_key=GEMINI_API_KEY)
+# Using gemini-1.5-flash for speed and free tier availability
+model = genai.GenerativeModel('gemini-1.5-flash')
+
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
-app = FastAPI(title="CityGuardian Pro – Agentic Backend")
+app = FastAPI(title="CityGuardian Pro – Agentic Backend (Gemini Edition)")
 
 # --- CORS ---
 origins = [
@@ -207,56 +211,49 @@ def calculate_distance(lat1, lon1, lat2, lon2):
     a = math.sin(dlat/2)**2 + math.cos(p1)*math.cos(p2)*math.sin(dlon/2)**2
     return R * 2 * math.asin(math.sqrt(a))
 
-# --- AI AGENTS ---
+def clean_gemini_json(text):
+    """Removes markdown code blocks from Gemini response to get clean JSON."""
+    clean = re.sub(r"```json\s?|\s?```", "", text).strip()
+    return clean
 
-def vision_verifier(img_b64: str):
+# --- AI AGENTS (GEMINI POWERED) ---
+
+def vision_verifier(image_data: bytes):
     """Verifies if the image shows a legitimate civic issue."""
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Is this a civic issue (garbage, pothole, leak, broken light)? Respond ONLY in JSON: {'valid': true/false}"},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-            ]}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(res.choices[0].message.content)
-    except: return {"valid": True}
+        prompt = "Is this a civic issue (garbage, pothole, leak, broken light)? Respond ONLY in JSON: {'valid': true/false}"
+        contents = [prompt, {"mime_type": "image/jpeg", "data": image_data}]
+        res = model.generate_content(contents)
+        return json.loads(clean_gemini_json(res.text))
+    except Exception as e:
+        print(f"Vision Verifier Error: {e}")
+        return {"valid": True}
 
-def vision_description_agent(img_b64: str):
+def vision_description_agent(image_data: bytes):
     """Generates a text description from an image for zero-click reporting."""
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": "Describe the civic issue in this photo in one clear, formal sentence. If none found, say 'None'."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
-            ]}],
-            max_tokens=100
-        )
-        desc = res.choices[0].message.content.strip()
-        return None if desc.lower() == "none" else desc
+        prompt = "Describe the civic issue in this photo in one clear, formal sentence. If none found, say 'None'."
+        contents = [prompt, {"mime_type": "image/jpeg", "data": image_data}]
+        res = model.generate_content(contents)
+        desc = res.text.strip()
+        return None if "none" in desc.lower() else desc
     except: return None
 
 def classification_agent(complaint: str):
     """Categorizes the issue and sets urgency."""
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": f"Classify this civic complaint. Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{'category': '...', 'urgency': 'low|medium|high'}}\n\nComplaint: {complaint}"}],
-            response_format={"type": "json_object"}
-        )
-        return json.loads(res.choices[0].message.content)
+        prompt = f"Classify this civic complaint. Categories: Water, Sewage, Roads, Electric. Respond ONLY in JSON: {{'category': '...', 'urgency': 'low|medium|high'}}\n\nComplaint: {complaint}"
+        res = model.generate_content(prompt)
+        return json.loads(clean_gemini_json(res.text))
     except: return {"category": "Roads", "urgency": "medium"}
 
 def drafting_agent(name, email, complaint, location, category, urgency):
     """Drafts a formal municipal email body."""
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "system", "content": "You are a professional Municipal Correspondence AI."},
-                  {"role": "user", "content": f"Write a formal 3-paragraph email for {name} ({email}) regarding a {category} issue at {location}. Issue details: {complaint}. Urgency: {urgency}."}]
-    )
-    return res.choices[0].message.content
+    try:
+        prompt = f"You are a professional Municipal Correspondence AI. Write a formal 3-paragraph email for {name} ({email}) regarding a {category} issue at {location}. Issue details: {complaint}. Urgency: {urgency}."
+        res = model.generate_content(prompt)
+        return res.text
+    except: return f"Formal report for {category} issue at {location}. Details: {complaint}."
 
 # --- MAIN ROUTE ---
 @app.post("/send-report")
@@ -271,17 +268,21 @@ async def send_report(
 ):
     # 1. IMAGE & VISION PROCESSING
     img_b64 = None
+    image_bytes = None
+    
     if image:
-        content = await image.read()
-        img_b64 = base64.b64encode(content).decode()
+        image_bytes = await image.read()
+        # Keep base64 for Maileroo/email attachment
+        img_b64 = base64.b64encode(image_bytes).decode()
         
-        v_check = vision_verifier(img_b64)
+        # Vision validation with Gemini
+        v_check = vision_verifier(image_bytes)
         if not v_check.get("valid"):
             raise HTTPException(status_code=400, detail="Image rejected: Not a civic issue.")
 
         # Zero-Click Logic: Generate text from image if complaint is empty
         if not complaint or complaint.strip() == "" or complaint.lower() == "undefined":
-            complaint = vision_description_agent(img_b64)
+            complaint = vision_description_agent(image_bytes)
             if not complaint:
                 raise HTTPException(status_code=400, detail="Could not identify issue from image.")
 
@@ -291,7 +292,6 @@ async def send_report(
     # 2. DUPLICATE CHECK (Geospatial + Keyword)
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
     try:
-        # Cache-busting URL for Google Sheets CSV
         SHEET_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&t={int(time.time())}"
         df = pd.read_csv(SHEET_URL)
         df.columns = [c.strip() for c in df.columns]
@@ -317,17 +317,16 @@ async def send_report(
     cat = cl.get('category', 'Roads')
     urg = cl.get('urgency', 'medium')
 
-    # Hybrid Routing (Keyword Priority)
     tokens = set(re.findall(r"\b[a-z]+\b", complaint.lower()))
     dept = next((d for d in OFFICERS if any(k in tokens for k in d['keywords'])), None)
     
-    if not dept: # Fallback to AI Category matching
+    if not dept: 
         dept = next((d for d in OFFICERS if d['name'].split()[0].lower() in cat.lower()), OFFICERS[0])
 
     # 4. DATA SYNC (n8n & Email)
     report_id = str(uuid.uuid4())[:8]
     loc_display = address if address else f"{latitude}, {longitude}"
-    full_loc_info = f"{loc_display}\nMaps: google.com/maps?q=lat,lng{latitude},{longitude}"
+    full_loc_info = f"{loc_display}\nMaps: https://www.google.com/maps?q={latitude},{longitude}"
 
     try:
         requests.post("https://shivam2212.app.n8n.cloud/webhook/city-report-intake", json={
@@ -359,7 +358,7 @@ async def send_report(
         "id": report_id,
         "department": dept['name'], 
         "urgency": urg,
-        "ai_description": complaint if image else None # Show user what AI saw
+        "ai_description": complaint if image else None 
     }
 
 @app.get("/")
