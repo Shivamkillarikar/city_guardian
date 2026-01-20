@@ -184,7 +184,7 @@ origins = [
     "http://127.0.0.1:5500",
     "https://city-guardian-yybm.vercel.app",
     "https://city-guardian-n8n-integration.vercel.app",
-    "https://cityguardian-react.vercel.app/",
+    "https://cityguardian-react.vercel.app",
 ]
 app.add_middleware(
     CORSMiddleware,
@@ -385,6 +385,7 @@ async def send_report(
 @app.get("/")
 def health(): return {"status": "active"}
     
+
 
 
 
