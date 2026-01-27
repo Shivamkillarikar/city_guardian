@@ -163,8 +163,7 @@ async def send_report(
             "longitude": longitude,
             "issue": complaint
         })
-        except Exception as e:
-        print(f"Agent 3 Trigger Failed: {e}")
+        except Exception as e: print(f"Agent 3 Trigger Failed: {e}")
 
     # 2. DUPLICATE CHECK (Geospatial + Keyword)
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
