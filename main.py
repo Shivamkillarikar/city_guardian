@@ -119,7 +119,7 @@ async def send_report(
     urg = cl.get('urgency', 'medium')
 
     # 3. AGENT 3: EMERGENCY DISPATCH (Telegram/Hospital Finder)
-    #if urg == 'high' or cat == 'Electric':
+    if urg == 'high' or urg == 'medium' or cat == 'Electric':
         try:
             n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook/emergency-dispatcher"
             requests.post(n8n_agent_3_url, json={
