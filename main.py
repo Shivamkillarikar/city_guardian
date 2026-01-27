@@ -194,7 +194,7 @@ async def send_report(
     urg = cl.get('urgency', 'medium')
 
     tokens = set(re.findall(r"\b[a-z]+\b", complaint.lower()))
-    dept = next((d for d in OFFICERf any(k in tokens for k in d['keywords'])), None)
+    dept = next((d for d in OFFICER any(k in tokens for k in d['keywords'])), None)
     
     if not dept: 
         dept = next((d for d in OFFICERS if d['name'].split()[0].lower() in cat.lower()), OFFICERS[0])
