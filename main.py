@@ -121,7 +121,7 @@ async def send_report(
     # 3. AGENT 3: EMERGENCY DISPATCH (Telegram/Hospital Finder)
     if urg == 'high' or cat == 'Electric':
         try:
-            n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook-test/emergency-dispatcher"
+            n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook/emergency-dispatcher"
             requests.post(n8n_agent_3_url, json={
                 "report_id": report_id,
                 "category": cat,
