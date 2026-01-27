@@ -151,6 +151,21 @@ async def send_report(
     if not complaint:
         raise HTTPException(status_code=400, detail="No complaint text or image provided.")
 
+
+    # Inside your send_report function, after AI classification
+    if cl.get('urgency') == 'high' or cl.get('category') == 'Electric':
+        try:
+        n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook-test/emergency-dispatch"
+        requests.post(n8n_agent_3_url, json={
+            "report_id": report_id,
+            "category": cat,
+            "latitude": latitude,
+            "longitude": longitude,
+            "issue": complaint
+        })
+        except Exception as e:
+        print(f"Agent 3 Trigger Failed: {e}")
+
     # 2. DUPLICATE CHECK (Geospatial + Keyword)
     SHEET_ID = '1yHcKcLdv0TEEpEZ3cAWd9A_t8MBE-yk4JuWqJKn0IeI'
     try:
@@ -180,7 +195,7 @@ async def send_report(
     urg = cl.get('urgency', 'medium')
 
     tokens = set(re.findall(r"\b[a-z]+\b", complaint.lower()))
-    dept = next((d for d in OFFICERS if any(k in tokens for k in d['keywords'])), None)
+    dept = next((d for d in OFFICERf any(k in tokens for k in d['keywords'])), None)
     
     if not dept: 
         dept = next((d for d in OFFICERS if d['name'].split()[0].lower() in cat.lower()), OFFICERS[0])
