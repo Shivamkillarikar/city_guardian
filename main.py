@@ -155,14 +155,14 @@ async def send_report(
     # Inside your send_report function, after AI classification
     if cl.get('urgency') == 'high' or cl.get('category') == 'Electric':
         try:
-        n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook-test/emergency-dispatch"
-        requests.post(n8n_agent_3_url, json={
+            n8n_agent_3_url = "https://shi22.app.n8n.cloud/webhook-test/emergency-dispatch"
+            requests.post(n8n_agent_3_url, json={
             "report_id": report_id,
             "category": cat,
             "latitude": latitude,
             "longitude": longitude,
             "issue": complaint
-        })
+             })
         except Exception as e: print(f"Agent 3 Trigger Failed: {e}")
 
     # 2. DUPLICATE CHECK (Geospatial + Keyword)
