@@ -32,8 +32,7 @@ origins = [
     "http://127.0.0.1:5500",
     "http://localhost:5173",
     "https://city-guardian-yybm.vercel.app",
-    "https://city-guardian-n8n-integration.vercel.app",
-    "https://cityguardian-react.vercel.app",
+    "https://city-guardian-n8n-integration.vercel.app"
 ]
 app.add_middleware(
     CORSMiddleware,
