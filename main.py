@@ -14,7 +14,7 @@ load_dotenv(override=True)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY)
 # Using gemini-1.5-flash for speed and project efficiency
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 MAILEROO_API_KEY = os.getenv("MAILEROO_API_KEY")
 
