@@ -24,8 +24,7 @@ app = FastAPI(title="CityGuardian Pro – Agentic Backend")
 origins = [
     "http://127.0.0.1:5500",
     "http://localhost:3000",
-    "https://city-guardian-yybm.vercel.app",
-    "https://cityguardian-react.vercel.app",
+    "https://city-guardian-yybm.vercel.app"
 ]
 app.add_middleware(
     CORSMiddleware,
