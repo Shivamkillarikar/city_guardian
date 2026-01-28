@@ -57,7 +57,7 @@ def clean_gemini_json(text):
 # --- AI AGENTS ---
 def vision_verifier(image_data: bytes):
     try:
-        prompt = "Is this a civic issue (garbage, pothole, leak, broken light, accident ...etc )? Respond ONLY in JSON: {'valid': true/false}"
+        prompt = "Is this a civic issue (garbage, pothole, leak, broken light...etc ) or emergency  , accident etc ? Respond ONLY in JSON: {'valid': true/false}"
         contents = [prompt, {"mime_type": "image/jpeg", "data": image_data}]
         res = model.generate_content(contents)
         return json.loads(clean_gemini_json(res.text))
@@ -65,7 +65,7 @@ def vision_verifier(image_data: bytes):
 
 def vision_description_agent(image_data: bytes):
     try:
-        prompt = "Describe the civic issue in this photo in one clear, formal sentence."
+        prompt = "Describe the issue in this photo in one clear, formal sentence."
         contents = [prompt, {"mime_type": "image/jpeg", "data": image_data}]
         res = model.generate_content(contents)
         return res.text.strip()
